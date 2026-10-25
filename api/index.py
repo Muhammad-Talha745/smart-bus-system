@@ -8,11 +8,51 @@ app = Flask(__name__)
 SUPPORTED_CITIES = ("Karachi", "Hyderabad", "Sukkur", "Mirpur Khas", "Lahore")
 
 routes = [
-    {"route_id": "R101", "departure_city": "Karachi", "destination_city": "Hyderabad", "departure_time": "08:00 AM", "ticket_price": 1200, "total_seats": 40, "available_seats": 40},
-    {"route_id": "R102", "departure_city": "Karachi", "destination_city": "Sukkur", "departure_time": "09:30 AM", "ticket_price": 2000, "total_seats": 36, "available_seats": 36},
-    {"route_id": "R103", "departure_city": "Hyderabad", "destination_city": "Mirpur Khas", "departure_time": "11:00 AM", "ticket_price": 800, "total_seats": 32, "available_seats": 32},
-    {"route_id": "R104", "departure_city": "Karachi", "destination_city": "Lahore", "departure_time": "07:00 PM", "ticket_price": 5000, "total_seats": 45, "available_seats": 45},
-    {"route_id": "R105", "departure_city": "Sukkur", "destination_city": "Hyderabad", "departure_time": "02:00 PM", "ticket_price": 1500, "total_seats": 30, "available_seats": 30},
+    {
+        "route_id": "R101",
+        "departure_city": "Karachi",
+        "destination_city": "Hyderabad",
+        "departure_time": "08:00 AM",
+        "ticket_price": 1200,
+        "total_seats": 40,
+        "available_seats": 40,
+    },
+    {
+        "route_id": "R102",
+        "departure_city": "Karachi",
+        "destination_city": "Sukkur",
+        "departure_time": "09:30 AM",
+        "ticket_price": 2000,
+        "total_seats": 36,
+        "available_seats": 36,
+    },
+    {
+        "route_id": "R103",
+        "departure_city": "Hyderabad",
+        "destination_city": "Mirpur Khas",
+        "departure_time": "11:00 AM",
+        "ticket_price": 800,
+        "total_seats": 32,
+        "available_seats": 32,
+    },
+    {
+        "route_id": "R104",
+        "departure_city": "Karachi",
+        "destination_city": "Lahore",
+        "departure_time": "07:00 PM",
+        "ticket_price": 5000,
+        "total_seats": 45,
+        "available_seats": 45,
+    },
+    {
+        "route_id": "R105",
+        "departure_city": "Sukkur",
+        "destination_city": "Hyderabad",
+        "departure_time": "02:00 PM",
+        "ticket_price": 1500,
+        "total_seats": 30,
+        "available_seats": 30,
+    },
 ]
 
 bookings = []
@@ -142,4 +182,80 @@ HTML_TEMPLATE = """
                                     {% if b.status == 'Confirmed' %}
                                     <form method="POST" action="">
                                         <input type="hidden" name="action_type" value="cancel">
-                                        <input type="hidden" name="booki
+                                        <input type="hidden" name="booking_id" value="{{ b.booking_id }}">
+                                        <button type="submit" class="text-xs text-red-600 hover:underline font-semibold">Cancel</button>
+                                    </form>
+                                    {% else %}
+                                    <span class="text-xs text-slate-400">Cancelled</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+            </div>
+        </section>
+    </main>
+</body>
+</html>
+"""
+
+
+# Catch-all route prevents 404 regardless of how Vercel rewrites internal paths
+@app.route("/", defaults={"path": ""}, methods=["GET", "POST"])
+@app.route("/<path:path>", methods=["GET", "POST"])
+def index(path):
+    global booking_counter
+    if request.method == "POST":
+        action = request.form.get("action_type")
+
+        # Handle Booking
+        if action == "book":
+            name = request.form.get("name", "").strip()
+            age_raw = request.form.get("age", "0")
+            route_id = request.form.get("route_id", "")
+            seats_raw = request.form.get("seats", "0")
+
+            if age_raw.isdigit() and seats_raw.isdigit():
+                age = int(age_raw)
+                seats = int(seats_raw)
+                route = next((r for r in routes if r["route_id"] == route_id), None)
+                if route and 0 < seats <= route["available_seats"] and name and age > 0:
+                    booking_id = f"B{booking_counter}"
+                    booking_counter += 1
+                    route["available_seats"] -= seats
+                    bookings.insert(
+                        0,
+                        {
+                            "booking_id": booking_id,
+                            "passenger_name": name,
+                            "passenger_age": age,
+                            "route_id": route_id,
+                            "seats": seats,
+                            "total_fare": route["ticket_price"] * seats,
+                            "status": "Confirmed",
+                        },
+                    )
+
+        # Handle Cancellation
+        elif action == "cancel":
+            b_id = request.form.get("booking_id")
+            booking = next((b for b in bookings if b["booking_id"] == b_id), None)
+            if booking and booking["status"] == "Confirmed":
+                route = next(
+                    (r for r in routes if r["route_id"] == booking["route_id"]), None
+                )
+                if route:
+                    route["available_seats"] = min(
+                        route["total_seats"],
+                        route["available_seats"] + booking["seats"],
+                    )
+                booking["status"] = "Cancelled"
+
+    return render_template_string(HTML_TEMPLATE, routes=routes, bookings=bookings)
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
