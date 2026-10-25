@@ -1,123 +1,230 @@
-from flask import Flask, render_template_string, request
+import os
+import json
+import sqlite3
+from datetime import datetime
+from flask import Flask, render_template_string, request, session, redirect
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "smartbus_ultra_luxury_secret_key_987654")
+
+# Vercel serverless functions have write access to /tmp
+DB_FILE = "/tmp/smartbus.db" if os.environ.get("VERCEL") else "smartbus.db"
 
 # ==========================================
-# 1. LUXURY DATA & FLEET STATE
+# 1. DATABASE SETUP & INITIALIZATION
 # ==========================================
-routes = [
-    {
-        "route_id": "LX-101",
-        "departure_city": "Karachi",
-        "destination_city": "Hyderabad",
-        "departure_time": "08:00 AM",
-        "arrival_time": "10:30 AM",
-        "ticket_price": 1800,
-        "total_seats": 28,
-        "available_seats": 26,
-        "bus_model": "Mercedes-Benz Travego VIP",
-        "class": "Royal First Class",
-        "occupied_seats": ["1A", "1B"],
-    },
-    {
-        "route_id": "LX-102",
-        "departure_city": "Karachi",
-        "destination_city": "Sukkur",
-        "departure_time": "09:30 AM",
-        "arrival_time": "03:30 PM",
-        "ticket_price": 3200,
-        "total_seats": 28,
-        "available_seats": 27,
-        "bus_model": "Volvo 9900 Executive Sleeper",
-        "class": "Imperial Suite",
-        "occupied_seats": ["3C"],
-    },
-    {
-        "route_id": "LX-103",
-        "departure_city": "Hyderabad",
-        "destination_city": "Mirpur Khas",
-        "departure_time": "11:00 AM",
-        "arrival_time": "12:45 PM",
-        "ticket_price": 1200,
-        "total_seats": 28,
-        "available_seats": 28,
-        "bus_model": "Scania Touring HD",
-        "class": "Executive Business",
-        "occupied_seats": [],
-    },
-    {
-        "route_id": "LX-104",
-        "departure_city": "Karachi",
-        "destination_city": "Lahore",
-        "departure_time": "07:00 PM",
-        "arrival_time": "09:00 AM",
-        "ticket_price": 6500,
-        "total_seats": 28,
-        "available_seats": 24,
-        "bus_model": "Setra S 531 DT Double-Decker",
-        "class": "Presidential Stateroom",
-        "occupied_seats": ["1A", "1B", "2A", "2B"],
-    },
-    {
-        "route_id": "LX-105",
-        "departure_city": "Sukkur",
-        "destination_city": "Hyderabad",
-        "departure_time": "02:00 PM",
-        "arrival_time": "06:30 PM",
-        "ticket_price": 2200,
-        "total_seats": 28,
-        "available_seats": 28,
-        "bus_model": "Mercedes-Benz Travego VIP",
-        "class": "Royal First Class",
-        "occupied_seats": [],
-    },
-]
+from werkzeug.security import generate_password_hash, check_password_hash
 
-bookings = [
-    {
-        "booking_id": "LX-1001",
-        "passenger_name": "Tariq Mansoor",
-        "phone": "+92 300 1234567",
-        "cnic": "42101-9876543-1",
-        "passenger_age": 34,
-        "route_id": "LX-101",
-        "seats": ["1A", "1B"],
-        "subtotal": 3600,
-        "discount": 0,
-        "total_fare": 3600,
-        "status": "Confirmed",
-        "departure": "Karachi ➔ Hyderabad",
-        "departure_time": "08:00 AM",
-        "class": "Royal First Class",
-    }
-]
 
-booking_counter = 1002
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
+
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Users Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'passenger',
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    # Routes Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS routes (
+        route_id TEXT PRIMARY KEY,
+        departure_city TEXT NOT NULL,
+        destination_city TEXT NOT NULL,
+        departure_time TEXT NOT NULL,
+        arrival_time TEXT NOT NULL,
+        ticket_price INTEGER NOT NULL,
+        total_seats INTEGER NOT NULL,
+        available_seats INTEGER NOT NULL,
+        bus_model TEXT NOT NULL,
+        bus_class TEXT NOT NULL,
+        occupied_seats TEXT NOT NULL
+    )
+    """)
+
+    # Bookings Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS bookings (
+        booking_id TEXT PRIMARY KEY,
+        user_id INTEGER,
+        passenger_name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        cnic TEXT NOT NULL,
+        passenger_age INTEGER NOT NULL,
+        route_id TEXT NOT NULL,
+        seats TEXT NOT NULL,
+        subtotal INTEGER NOT NULL,
+        discount INTEGER NOT NULL,
+        total_fare INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    # Seed Default Users if empty
+    cursor.execute("SELECT COUNT(*) FROM users")
+    if cursor.fetchone()[0] == 0:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                "Executive Controller",
+                "admin@smartbus.com",
+                generate_password_hash("admin123"),
+                "admin",
+                now,
+            ),
+        )
+        cursor.execute(
+            "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                "Tariq Mansoor",
+                "passenger@smartbus.com",
+                generate_password_hash("pass123"),
+                "passenger",
+                now,
+            ),
+        )
+
+    # Seed Default Routes if empty
+    cursor.execute("SELECT COUNT(*) FROM routes")
+    if cursor.fetchone()[0] == 0:
+        default_routes = [
+            (
+                "LX-101",
+                "Karachi",
+                "Hyderabad",
+                "08:00 AM",
+                "10:30 AM",
+                1800,
+                28,
+                26,
+                "Mercedes-Benz Travego VIP",
+                "Royal First Class",
+                json.dumps(["1A", "1B"]),
+            ),
+            (
+                "LX-102",
+                "Karachi",
+                "Sukkur",
+                "09:30 AM",
+                "03:30 PM",
+                3200,
+                28,
+                27,
+                "Volvo 9900 Executive Sleeper",
+                "Imperial Suite",
+                json.dumps(["3C"]),
+            ),
+            (
+                "LX-103",
+                "Hyderabad",
+                "Mirpur Khas",
+                "11:00 AM",
+                "12:45 PM",
+                1200,
+                28,
+                28,
+                "Scania Touring HD",
+                "Executive Business",
+                json.dumps([]),
+            ),
+            (
+                "LX-104",
+                "Karachi",
+                "Lahore",
+                "07:00 PM",
+                "09:00 AM",
+                6500,
+                28,
+                24,
+                "Setra S 531 DT Double-Decker",
+                "Presidential Stateroom",
+                json.dumps(["1A", "1B", "2A", "2B"]),
+            ),
+            (
+                "LX-105",
+                "Sukkur",
+                "Hyderabad",
+                "02:00 PM",
+                "06:30 PM",
+                2200,
+                28,
+                28,
+                "Mercedes-Benz Travego VIP",
+                "Royal First Class",
+                json.dumps([]),
+            ),
+        ]
+        cursor.executemany(
+            "INSERT INTO routes VALUES (?,?,?,?,?,?,?,?,?,?,?)", default_routes
+        )
+
+        # Seed 1 initial booking
+        cursor.execute(
+            """
+        INSERT INTO bookings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+            (
+                "LX-1001",
+                2,
+                "Tariq Mansoor",
+                "+92 300 1234567",
+                "42101-9876543-1",
+                34,
+                "LX-101",
+                json.dumps(["1A", "1B"]),
+                3600,
+                0,
+                3600,
+                "Confirmed",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+# ==========================================
+# 2. HTML / UI TEMPLATE (HAUTE MONOCHROME)
+# ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SMART BUS | Haute Luxury Intercity Transit</title>
+    <title>SMART BUS | Haute Luxury Transit</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Cinzel:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Cinzel:wght@600;700;800&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #030303; }
         .font-luxury { font-family: 'Cinzel', serif; }
         .border-luxury { border-color: rgba(255, 255, 255, 0.12); }
-        .bg-luxury-card { background-color: #0C0C0C; }
+        .bg-luxury-card { background-color: #0B0B0B; }
         .bg-luxury-input { background-color: #141414; }
-        
+
         .nav-btn.active {
             color: #FFFFFF !important;
             border-bottom: 2px solid #FFFFFF !important;
         }
-
-        .seat {
-            transition: all 0.15s ease;
-        }
+        .seat { transition: all 0.15s ease; }
         .seat.available:hover {
             border-color: #FFFFFF !important;
             background-color: #222222 !important;
@@ -132,8 +239,8 @@ HTML_TEMPLATE = """
         }
         .seat.occupied {
             background-color: #171717 !important;
-            border-color: #282828 !important;
-            color: #555555 !important;
+            border-color: #262626 !important;
+            color: #4b4b4b !important;
             cursor: not-allowed;
             text-decoration: line-through;
         }
@@ -141,10 +248,11 @@ HTML_TEMPLATE = """
 </head>
 <body class="text-white min-h-screen selection:bg-white selection:text-black">
 
-    <!-- Top Luxury Bar -->
-    <header class="border-b border-luxury sticky top-0 bg-[#030303]/90 backdrop-blur-xl z-50">
+    <!-- Top Luxury Navigation -->
+    <header class="border-b border-luxury sticky top-0 bg-[#030303]/95 backdrop-blur-xl z-40">
         <div class="max-w-7xl mx-auto px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
             
+            <!-- Logo -->
             <div class="flex items-center space-x-3 cursor-pointer" onclick="switchTab('bookingTab')">
                 <div class="w-9 h-9 border border-white flex items-center justify-center font-luxury font-bold text-base tracking-tighter">
                     SB
@@ -155,7 +263,7 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- Multi-Page Navigation Links -->
+            <!-- Page Navigation -->
             <nav class="flex items-center space-x-6 text-xs uppercase tracking-wider font-medium">
                 <button onclick="switchTab('bookingTab')" id="nav-bookingTab" class="nav-btn py-2 text-neutral-400 hover:text-white transition active">
                     Book Journey
@@ -163,20 +271,42 @@ HTML_TEMPLATE = """
                 <button onclick="switchTab('fleetTab')" id="nav-fleetTab" class="nav-btn py-2 text-neutral-400 hover:text-white transition">
                     Fleet & Routes
                 </button>
-                <button onclick="switchTab('pnrTab')" id="nav-pnrTab" class="nav-btn py-2 text-neutral-400 hover:text-white transition">
-                    Boarding Pass
+                <button onclick="switchTab('myBookingsTab')" id="nav-myBookingsTab" class="nav-btn py-2 text-neutral-400 hover:text-white transition">
+                    My Bookings
                 </button>
-                <button onclick="switchTab('aboutTab')" id="nav-aboutTab" class="nav-btn py-2 text-neutral-400 hover:text-white transition">
-                    Standards
+
+                {% if current_user and current_user.role == 'admin' %}
+                <button onclick="switchTab('adminTab')" id="nav-adminTab" class="nav-btn py-1.5 px-3 border border-white rounded hover:bg-white hover:text-black transition">
+                    👑 Admin Portal
                 </button>
-                <button onclick="switchTab('adminTab')" id="nav-adminTab" class="nav-btn py-1.5 px-3 border border-white/30 rounded hover:border-white hover:bg-white hover:text-black text-neutral-300 transition">
-                    🔒 Admin Portal
-                </button>
+                {% endif %}
             </nav>
+
+            <!-- Authentication User Badge -->
+            <div class="flex items-center space-x-3 text-xs font-mono">
+                {% if current_user %}
+                <div class="flex items-center space-x-3 border border-white/20 px-3 py-1.5 rounded">
+                    <span class="text-neutral-400 uppercase text-[10px]">{{ current_user.role }}:</span>
+                    <span class="font-bold text-white">{{ current_user.name }}</span>
+                    <form method="POST" action="" class="inline">
+                        <input type="hidden" name="action_type" value="logout">
+                        <button type="submit" class="text-neutral-400 hover:text-red-400 ml-2 text-[10px] uppercase underline">Sign Out</button>
+                    </form>
+                </div>
+                {% else %}
+                <button onclick="openAuthModal('login')" class="px-3 py-1.5 text-neutral-300 hover:text-white uppercase">
+                    Sign In
+                </button>
+                <button onclick="openAuthModal('register')" class="px-3 py-1.5 bg-white text-black font-bold uppercase hover:bg-neutral-200 transition">
+                    Register
+                </button>
+                {% endif %}
+            </div>
+
         </div>
     </header>
 
-    <!-- Global Notifications -->
+    <!-- Global Flash Notification -->
     {% if alert_message %}
     <div class="max-w-7xl mx-auto px-6 mt-6">
         <div class="p-4 rounded border text-xs uppercase tracking-widest font-mono flex items-center justify-between {{ alert_color }}">
@@ -186,29 +316,28 @@ HTML_TEMPLATE = """
     {% endif %}
 
     <!-- ============================================================== -->
-    <!-- PAGE 1: PASSENGER BOOKING CONSOLE (DEFAULT)                     -->
+    <!-- TAB 1: PASSENGER BOOKING CONSOLE                               -->
     <!-- ============================================================== -->
     <div id="bookingTab" class="page-content max-w-7xl mx-auto px-6 py-10 space-y-10">
         
-        <!-- Hero Tagline -->
         <div class="border-b border-luxury pb-6 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
             <div>
-                <span class="text-[10px] font-mono uppercase tracking-[0.3em] text-neutral-400">Reserve Private Charter Seating</span>
-                <h2 class="text-3xl md:text-4xl font-luxury font-bold mt-1 tracking-tight">First-Class Intercity Travel</h2>
+                <span class="text-[10px] font-mono uppercase tracking-[0.3em] text-neutral-400">Database-Integrated Fleet System</span>
+                <h2 class="text-3xl md:text-4xl font-luxury font-bold mt-1 tracking-tight">Reserve First-Class Seating</h2>
             </div>
-            <div class="text-right">
-                <span class="text-xs font-mono text-neutral-400">Total Fleet Journeys Today</span>
-                <p class="text-xl font-bold font-mono">05 Active Routes</p>
+            <div class="text-right font-mono text-xs text-neutral-400">
+                <span>Active Network:</span>
+                <p class="text-lg font-bold text-white">{{ routes|length }} Scheduled Coaches</p>
             </div>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             
-            <!-- Reservation Form with Real Seat Selection -->
-            <section class="lg:col-span-5 bg-luxury-card border border-luxury p-7 rounded-none space-y-6">
-                <div class="border-b border-luxury pb-4">
-                    <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Step 01 / Reservation Desk</span>
-                    <h3 class="text-xl font-luxury font-bold uppercase mt-1">Passenger Manifesto</h3>
+            <!-- Reservation Form with Live Seat Map -->
+            <section class="lg:col-span-5 bg-luxury-card border border-luxury p-7 space-y-6">
+                <div class="border-b border-luxury pb-3">
+                    <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Traveler Details</span>
+                    <h3 class="text-xl font-luxury font-bold uppercase mt-1">Passenger Manifest</h3>
                 </div>
 
                 <form method="POST" action="" id="bookingForm" class="space-y-4">
@@ -217,44 +346,44 @@ HTML_TEMPLATE = """
 
                     <div>
                         <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">Full Passenger Name</label>
-                        <input type="text" name="name" placeholder="Lord / Lady / Full Name" required
-                               class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none focus:border-white transition">
+                        <input type="text" name="name" value="{{ current_user.name if current_user else '' }}" placeholder="Passenger Full Name" required
+                               class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none focus:border-white">
                     </div>
 
                     <div class="grid grid-cols-2 gap-3">
                         <div>
                             <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">Mobile Contact</label>
                             <input type="tel" name="phone" placeholder="0300-1234567" required
-                                   class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none focus:border-white transition">
+                                   class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none focus:border-white">
                         </div>
                         <div>
-                            <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">National ID / CNIC</label>
+                            <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">CNIC / ID</label>
                             <input type="text" name="cnic" placeholder="42101-XXXXXXX-X" required
-                                   class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none focus:border-white transition">
+                                   class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none focus:border-white">
                         </div>
                     </div>
 
                     <div class="grid grid-cols-2 gap-3">
                         <div>
                             <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">Age</label>
-                            <input type="number" name="age" min="1" max="110" placeholder="e.g. 30" required
-                                   class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none focus:border-white transition">
+                            <input type="number" name="age" min="1" max="110" placeholder="e.g. 28" required
+                                   class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none focus:border-white">
                         </div>
                         <div>
-                            <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">Luggage Preference</label>
+                            <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">Luggage Class</label>
                             <select class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none">
-                                <option>Executive 30kg + Cabin</option>
-                                <option>VIP Stateroom 45kg</option>
+                                <option>30kg Included</option>
+                                <option>45kg VIP Suite</option>
                             </select>
                         </div>
                     </div>
 
                     <div>
-                        <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">Select Scheduled Service</label>
+                        <label class="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">Select Coach Service</label>
                         <select name="route_id" id="routeSelect" onchange="renderBusSeats()" 
                                 class="w-full bg-luxury-input text-white border border-luxury px-3.5 py-2.5 text-sm focus:outline-none cursor-pointer">
                             {% for r in routes %}
-                            <option value="{{ r.route_id }}" data-price="{{ r.ticket_price }}" data-occupied='{{ r.occupied_seats | tojson }}'>
+                            <option value="{{ r.route_id }}" data-price="{{ r.ticket_price }}" data-occupied='{{ r.occupied_seats }}'>
                                 {{ r.route_id }} • {{ r.departure_city }} ➔ {{ r.destination_city }} (Rs. {{ "{:,}".format(r.ticket_price) }})
                             </option>
                             {% endfor %}
@@ -262,85 +391,76 @@ HTML_TEMPLATE = """
                     </div>
 
                     <!-- Visual Bus Cabin -->
-                    <div class="border border-luxury p-4 bg-black/60 space-y-3">
+                    <div class="border border-luxury p-4 bg-black/80 space-y-3">
                         <div class="flex justify-between items-center text-[10px] font-mono uppercase text-neutral-400 border-b border-luxury pb-2">
-                            <span>Pilot Cabin ❖ Front</span>
+                            <span>Pilot Cockpit ❖ Front</span>
                             <div class="flex items-center space-x-3">
                                 <span class="flex items-center"><span class="w-2 h-2 border border-neutral-600 bg-neutral-900 mr-1"></span> Free</span>
-                                <span class="flex items-center"><span class="w-2 h-2 bg-white mr-1"></span> Selected</span>
+                                <span class="flex items-center"><span class="w-2 h-2 bg-white mr-1"></span> Chosen</span>
                                 <span class="flex items-center"><span class="w-2 h-2 bg-neutral-800 mr-1"></span> Sold</span>
                             </div>
                         </div>
-
-                        <!-- 28 Seat Blueprint -->
                         <div id="seatGrid" class="space-y-2 py-2"></div>
                     </div>
 
-                    <!-- Summary & VIP Group Discount Calculation -->
+                    <!-- Live Breakdown & Discount -->
                     <div class="p-4 bg-luxury-input border border-luxury text-xs font-mono space-y-1.5">
                         <div class="flex justify-between text-neutral-400">
-                            <span>Chosen Seats:</span>
+                            <span>Selected Seats:</span>
                             <span id="selectedSeatsLabel" class="text-white font-bold">None</span>
                         </div>
                         <div class="flex justify-between text-neutral-400">
-                            <span>Total Count:</span>
+                            <span>Seat Count:</span>
                             <span id="seatCountLabel" class="text-white">0</span>
                         </div>
                         <div class="flex justify-between text-emerald-400" id="discountRow" style="display: none;">
-                            <span>VIP Corporate Discount (-10%):</span>
+                            <span>Corporate VIP Discount (10% off):</span>
                             <span id="discountLabel">- Rs. 0</span>
                         </div>
                         <div class="flex justify-between text-sm pt-2 border-t border-luxury font-bold text-white">
-                            <span>Payable Amount:</span>
+                            <span>Total Payable:</span>
                             <span id="totalFareLabel" class="text-base font-luxury">Rs. 0</span>
                         </div>
                     </div>
 
                     <button type="submit" id="bookSubmitBtn" disabled
                             class="w-full py-3.5 bg-white text-black hover:bg-neutral-200 transition font-bold text-xs uppercase tracking-widest disabled:opacity-20 disabled:cursor-not-allowed">
-                        Confirm Reservation & Issue Pass ➔
+                        Confirm & Store Reservation ➔
                     </button>
                 </form>
             </section>
 
-            <!-- Active Fleet Departures Table -->
+            <!-- Real-Time Departures Schedule -->
             <section class="lg:col-span-7 space-y-6">
-                
                 <div class="bg-luxury-card border border-luxury p-6">
                     <div class="flex justify-between items-center border-b border-luxury pb-4 mb-4">
                         <div>
-                            <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Live Manifest</span>
-                            <h3 class="text-lg font-luxury font-bold uppercase">Scheduled Departures</h3>
+                            <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Live Database Feed</span>
+                            <h3 class="text-lg font-luxury font-bold uppercase">Scheduled Fleet Journeys</h3>
                         </div>
-                        <span class="text-xs font-mono text-neutral-400">Synchronized Real-Time</span>
+                        <span class="text-xs font-mono text-neutral-400">Real-Time Inventory</span>
                     </div>
 
                     <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm">
+                        <table class="w-full text-left text-xs">
                             <thead>
-                                <tr class="text-[10px] font-mono uppercase tracking-wider text-neutral-400 border-b border-luxury pb-2">
+                                <tr class="text-[10px] font-mono uppercase text-neutral-400 border-b border-luxury pb-2">
                                     <th class="pb-3">Route</th>
-                                    <th class="pb-3">Origin ➔ Destination</th>
-                                    <th class="pb-3">Departure</th>
-                                    <th class="pb-3">Class</th>
+                                    <th class="pb-3">Journey</th>
+                                    <th class="pb-3">Departure / Arrival</th>
                                     <th class="pb-3">Fare</th>
                                     <th class="pb-3 text-right">Available</th>
                                 </tr>
                             </thead>
-                            <tbody class="divide-y divide-luxury text-xs">
+                            <tbody class="divide-y divide-luxury">
                                 {% for r in routes %}
-                                <tr class="hover:bg-white/[0.02] transition">
+                                <tr class="hover:bg-white/[0.02]">
                                     <td class="py-3.5 font-mono font-bold text-white">{{ r.route_id }}</td>
                                     <td class="py-3.5">
                                         <div class="font-bold text-white">{{ r.departure_city }} ➔ {{ r.destination_city }}</div>
-                                        <div class="text-[10px] text-neutral-400">{{ r.bus_model }}</div>
+                                        <div class="text-[10px] text-neutral-400 font-mono">{{ r.bus_model }}</div>
                                     </td>
-                                    <td class="py-3.5 font-mono text-neutral-300">{{ r.departure_time }}</td>
-                                    <td class="py-3.5">
-                                        <span class="px-2 py-0.5 border border-white/20 text-[10px] uppercase font-mono tracking-wider">
-                                            {{ r.class }}
-                                        </span>
-                                    </td>
+                                    <td class="py-3.5 font-mono text-neutral-300">{{ r.departure_time }} → {{ r.arrival_time }}</td>
                                     <td class="py-3.5 font-bold font-mono">Rs. {{ "{:,}".format(r.ticket_price) }}</td>
                                     <td class="py-3.5 text-right font-mono font-bold">
                                         {% if r.available_seats == 0 %}
@@ -356,72 +476,27 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- Recent Passenger Boarding Passes -->
-                <div class="bg-luxury-card border border-luxury p-6">
-                    <div class="flex justify-between items-center border-b border-luxury pb-4 mb-4">
-                        <div>
-                            <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Boarding Passes</span>
-                            <h3 class="text-lg font-luxury font-bold uppercase">Issued Passenger Manifest</h3>
-                        </div>
+                <!-- Account / Booking Quick Notice -->
+                <div class="bg-luxury-card border border-luxury p-6 flex justify-between items-center">
+                    <div>
+                        <h4 class="font-luxury font-bold text-sm uppercase">Need Your Official E-Ticket?</h4>
+                        <p class="text-xs text-neutral-400 mt-1">Track and print your electronic boarding pass in the My Bookings section.</p>
                     </div>
-
-                    {% if not bookings %}
-                    <p class="text-neutral-500 text-xs py-4 text-center font-mono uppercase">No records issued in current session.</p>
-                    {% else %}
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-xs font-mono">
-                            <thead>
-                                <tr class="text-[10px] uppercase tracking-wider text-neutral-400 border-b border-luxury">
-                                    <th class="pb-2">Pass #</th>
-                                    <th class="pb-2">Passenger</th>
-                                    <th class="pb-2">Seats</th>
-                                    <th class="pb-2">Total Paid</th>
-                                    <th class="pb-2">Status</th>
-                                    <th class="pb-2 text-right">Document</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-luxury">
-                                {% for b in bookings %}
-                                <tr>
-                                    <td class="py-3 font-bold text-white">{{ b.booking_id }}</td>
-                                    <td class="py-3 font-sans font-medium text-white">{{ b.passenger_name }}</td>
-                                    <td class="py-3">
-                                        {% for s in b.seats %}
-                                        <span class="border border-white/20 px-1 py-0.5 text-[9px] mr-1">{{ s }}</span>
-                                        {% endfor %}
-                                    </td>
-                                    <td class="py-3 font-bold">Rs. {{ "{:,}".format(b.total_fare) }}</td>
-                                    <td class="py-3">
-                                        <span class="px-2 py-0.5 text-[10px] uppercase font-bold {% if b.status == 'Confirmed' %}bg-white text-black{% else %}border border-red-500 text-red-400{% endif %}">
-                                            {{ b.status }}
-                                        </span>
-                                    </td>
-                                    <td class="py-3 text-right">
-                                        <button onclick='openTicketModal({{ b | tojson }})' 
-                                                class="px-2.5 py-1 border border-white text-white hover:bg-white hover:text-black text-[10px] uppercase transition font-mono">
-                                            Print E-Ticket 🖨
-                                        </button>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    {% endif %}
+                    <button onclick="switchTab('myBookingsTab')" class="px-4 py-2 border border-white text-xs uppercase font-mono hover:bg-white hover:text-black transition">
+                        View Passes ➔
+                    </button>
                 </div>
-
             </section>
         </div>
     </div>
 
     <!-- ============================================================== -->
-    <!-- PAGE 2: FLEET & ROUTES SHOWCASE                                -->
+    <!-- TAB 2: FLEET & ROUTES SHOWCASE                                 -->
     <!-- ============================================================== -->
     <div id="fleetTab" class="page-content max-w-7xl mx-auto px-6 py-10 space-y-10 hidden">
         <div class="border-b border-luxury pb-4">
-            <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">The Master Fleet</span>
-            <h2 class="text-3xl font-luxury font-bold uppercase mt-1">Intercity Fleet Portfolio</h2>
-            <p class="text-xs text-neutral-400 mt-1 max-w-2xl">Every coach in our fleet is custom-commissioned with ergonomic sleeper cabins, high-speed Starlink connectivity, and individual passenger climate controls.</p>
+            <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Intercity Portfolio</span>
+            <h2 class="text-3xl font-luxury font-bold uppercase mt-1">The Master Fleet</h2>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -430,33 +505,29 @@ HTML_TEMPLATE = """
                 <div>
                     <div class="flex justify-between items-center text-xs font-mono text-neutral-400 mb-2">
                         <span>{{ r.route_id }}</span>
-                        <span class="border border-white/20 px-2 py-0.5 uppercase text-[9px]">{{ r.class }}</span>
+                        <span class="border border-white/20 px-2 py-0.5 uppercase text-[9px]">{{ r.bus_class }}</span>
                     </div>
                     <h3 class="text-xl font-luxury font-bold">{{ r.departure_city }} ➔ {{ r.destination_city }}</h3>
                     <p class="text-xs text-neutral-400 font-mono mt-1">{{ r.bus_model }}</p>
                 </div>
 
-                <div class="border-t border-b border-luxury py-3 my-2 text-xs font-mono space-y-1 text-neutral-300">
+                <div class="border-t border-b border-luxury py-3 text-xs font-mono space-y-1 text-neutral-300">
                     <div class="flex justify-between">
                         <span>Departure Time:</span>
                         <span class="text-white font-bold">{{ r.departure_time }}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span>Estimated Arrival:</span>
-                        <span class="text-white font-bold">{{ r.arrival_time }}</span>
                     </div>
                     <div class="flex justify-between">
                         <span>Standard Fare:</span>
                         <span class="text-white font-bold">Rs. {{ "{:,}".format(r.ticket_price) }}</span>
                     </div>
                     <div class="flex justify-between">
-                        <span>Seating Configuration:</span>
-                        <span class="text-white">2x2 Luxury Recliner</span>
+                        <span>Total Capacity:</span>
+                        <span class="text-white font-bold">{{ r.total_seats }} VIP Seats</span>
                     </div>
                 </div>
 
                 <button onclick="selectRouteAndGo('{{ r.route_id }}')" class="w-full py-2.5 border border-white text-white hover:bg-white hover:text-black font-bold text-xs uppercase tracking-widest transition">
-                    Reserve On This Coach ➔
+                    Book On This Service ➔
                 </button>
             </div>
             {% endfor %}
@@ -464,86 +535,105 @@ HTML_TEMPLATE = """
     </div>
 
     <!-- ============================================================== -->
-    <!-- PAGE 3: PNR & BOARDING PASS LOOKUP                             -->
+    <!-- TAB 3: USER SPECIFIC BOOKINGS                                  -->
     <!-- ============================================================== -->
-    <div id="pnrTab" class="page-content max-w-7xl mx-auto px-6 py-10 space-y-10 hidden">
-        <div class="border-b border-luxury pb-4">
-            <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Electronic Verification</span>
-            <h2 class="text-3xl font-luxury font-bold uppercase mt-1">Boarding Pass Terminal</h2>
-        </div>
-
-        <div class="max-w-xl mx-auto bg-luxury-card border border-luxury p-8 space-y-6">
-            <h3 class="text-lg font-luxury font-bold uppercase text-center">Retrieve Digital Boarding Pass</h3>
-            <p class="text-xs text-neutral-400 text-center">Enter your issued Pass ID (e.g. LX-1001) to verify reservation status and print travel passes.</p>
-            
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-[10px] font-mono uppercase text-neutral-400 mb-1">Pass / Ticket ID</label>
-                    <input type="text" id="lookupIdInput" placeholder="LX-1001" class="w-full bg-luxury-input border border-luxury px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:border-white">
-                </div>
-                <button onclick="searchPass()" class="w-full py-3 bg-white text-black font-bold text-xs uppercase tracking-widest hover:bg-neutral-200 transition">
-                    Locate Boarding Pass
-                </button>
-            </div>
-
-            <div id="lookupResult" class="hidden border-t border-luxury pt-4 text-xs font-mono space-y-2"></div>
-        </div>
-    </div>
-
-    <!-- ============================================================== -->
-    <!-- PAGE 4: EXECUTIVE STANDARDS (ABOUT)                            -->
-    <!-- ============================================================== -->
-    <div id="aboutTab" class="page-content max-w-7xl mx-auto px-6 py-10 space-y-10 hidden">
-        <div class="border-b border-luxury pb-4">
-            <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Haute Mobility</span>
-            <h2 class="text-3xl font-luxury font-bold uppercase mt-1">The Smart Bus Standards</h2>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div class="bg-luxury-card border border-luxury p-6 space-y-3">
-                <span class="text-2xl font-luxury">01</span>
-                <h3 class="text-lg font-luxury font-bold">First-Class Sleepers</h3>
-                <p class="text-xs text-neutral-400 leading-relaxed">Individually partitioned lie-flat seats upholstered in Italian full-grain leather, equipped with pneumatic lumbar support and noise-cancellation acoustics.</p>
-            </div>
-            <div class="bg-luxury-card border border-luxury p-6 space-y-3">
-                <span class="text-2xl font-luxury">02</span>
-                <h3 class="text-lg font-luxury font-bold">Dedicated Flight Crew</h3>
-                <p class="text-xs text-neutral-400 leading-relaxed">Every journey features certified cabin stewards serving gourmet hot beverages, refreshments, warm towels, and bespoke travel kits.</p>
-            </div>
-            <div class="bg-luxury-card border border-luxury p-6 space-y-3">
-                <span class="text-2xl font-luxury">03</span>
-                <h3 class="text-lg font-luxury font-bold">Terminal Priority</h3>
-                <p class="text-xs text-neutral-400 leading-relaxed">Skip the crowd. Access private Smart Bus executive arrival lounges with private parking, high-speed fiber internet, and complimentary luggage handlers.</p>
-            </div>
-        </div>
-    </div>
-
-    <!-- ============================================================== -->
-    <!-- PAGE 5: 🔒 MASTER ADMIN PORTAL                                 -->
-    <!-- ============================================================== -->
-    <div id="adminTab" class="page-content max-w-7xl mx-auto px-6 py-10 space-y-10 hidden">
-        <div class="border-b border-luxury pb-4 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+    <div id="myBookingsTab" class="page-content max-w-7xl mx-auto px-6 py-10 space-y-10 hidden">
+        <div class="border-b border-luxury pb-4 flex justify-between items-end">
             <div>
-                <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Executive Fleet Control</span>
-                <h2 class="text-3xl font-luxury font-bold uppercase mt-1">Command & Analytics Portal</h2>
+                <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Database Travel History</span>
+                <h2 class="text-3xl font-luxury font-bold uppercase mt-1">My Electronic Boarding Passes</h2>
             </div>
-            <div class="text-right">
-                <span class="px-3 py-1 border border-white text-xs font-mono uppercase">Role: Fleet Operations Controller</span>
-            </div>
+            {% if not current_user %}
+            <p class="text-xs font-mono text-neutral-400">Tip: Sign in to bind bookings permanently to your account.</p>
+            {% endif %}
         </div>
 
-        <!-- Financial & Fleet KPIs -->
+        <div class="bg-luxury-card border border-luxury p-6">
+            {% if not bookings %}
+            <p class="text-neutral-500 text-xs py-8 text-center font-mono uppercase">No records found. Reserve a seat to generate your boarding pass.</p>
+            {% else %}
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs font-mono">
+                    <thead>
+                        <tr class="text-[10px] uppercase tracking-wider text-neutral-400 border-b border-luxury">
+                            <th class="pb-3">Pass ID</th>
+                            <th class="pb-3">Passenger</th>
+                            <th class="pb-3">Contact</th>
+                            <th class="pb-3">Route</th>
+                            <th class="pb-3">Seats</th>
+                            <th class="pb-3">Fare Paid</th>
+                            <th class="pb-3">Status</th>
+                            <th class="pb-3 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-luxury">
+                        {% for b in bookings %}
+                        <tr>
+                            <td class="py-3.5 font-bold text-white">{{ b.booking_id }}</td>
+                            <td class="py-3.5 font-sans font-medium text-white">{{ b.passenger_name }}</td>
+                            <td class="py-3.5 text-neutral-400">{{ b.phone }}</td>
+                            <td class="py-3.5 text-neutral-200">{{ b.route_id }}</td>
+                            <td class="py-3.5">
+                                {% for s in b.seats %}
+                                <span class="border border-white/20 px-1 py-0.5 text-[9px] mr-1">{{ s }}</span>
+                                {% endfor %}
+                            </td>
+                            <td class="py-3.5 font-bold">Rs. {{ "{:,}".format(b.total_fare) }}</td>
+                            <td class="py-3.5">
+                                <span class="px-2 py-0.5 text-[9px] uppercase font-bold {% if b.status == 'Confirmed' %}bg-white text-black{% else %}border border-red-500 text-red-400{% endif %}">
+                                    {{ b.status }}
+                                </span>
+                            </td>
+                            <td class="py-3.5 text-right space-x-2">
+                                <button onclick='openTicketModal({{ b | tojson }})' 
+                                        class="px-2.5 py-1 border border-white text-white hover:bg-white hover:text-black text-[10px] uppercase transition">
+                                    Ticket 🖨
+                                </button>
+
+                                {% if b.status == 'Confirmed' %}
+                                <form method="POST" action="" class="inline">
+                                    <input type="hidden" name="action_type" value="cancel">
+                                    <input type="hidden" name="booking_id" value="{{ b.booking_id }}">
+                                    <button type="submit" class="px-2 py-0.5 border border-red-500 text-red-400 hover:bg-red-500 hover:text-white transition text-[10px] uppercase">
+                                        Cancel
+                                    </button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- TAB 4: 👑 ADMIN COMMAND PORTAL                                 -->
+    <!-- ============================================================== -->
+    {% if current_user and current_user.role == 'admin' %}
+    <div id="adminTab" class="page-content max-w-7xl mx-auto px-6 py-10 space-y-10 hidden">
+        <div class="border-b border-luxury pb-4 flex justify-between items-end">
+            <div>
+                <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Authenticated Operational Database</span>
+                <h2 class="text-3xl font-luxury font-bold uppercase mt-1">Admin Command Center</h2>
+            </div>
+            <span class="px-3 py-1 border border-white text-xs font-mono uppercase">Master Fleet Controller</span>
+        </div>
+
+        <!-- KPIs -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div class="bg-luxury-card border border-luxury p-5">
                 <p class="text-[10px] font-mono uppercase text-neutral-400">Gross Ticket Sales</p>
                 <p class="text-2xl font-bold font-mono text-white mt-1">Rs. {{ "{:,}".format(total_revenue) }}</p>
             </div>
             <div class="bg-luxury-card border border-luxury p-5">
-                <p class="text-[10px] font-mono uppercase text-neutral-400">Total Travelers Transported</p>
+                <p class="text-[10px] font-mono uppercase text-neutral-400">Total Seats Reserved</p>
                 <p class="text-2xl font-bold font-mono text-white mt-1">{{ total_reserved }} Seats</p>
             </div>
             <div class="bg-luxury-card border border-luxury p-5">
-                <p class="text-[10px] font-mono uppercase text-neutral-400">Confirmed Manifests</p>
+                <p class="text-[10px] font-mono uppercase text-neutral-400">Confirmed Bookings</p>
                 <p class="text-2xl font-bold font-mono text-white mt-1">{{ confirmed_count }} Active</p>
             </div>
             <div class="bg-luxury-card border border-luxury p-5">
@@ -554,11 +644,11 @@ HTML_TEMPLATE = """
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             
-            <!-- Add New Route Form -->
+            <!-- Deploy New Route into SQLite DB -->
             <div class="lg:col-span-5 bg-luxury-card border border-luxury p-6 space-y-4">
                 <div class="border-b border-luxury pb-3">
-                    <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Fleet Dispatch</span>
-                    <h3 class="text-lg font-luxury font-bold uppercase mt-1">Add Route to Inventory</h3>
+                    <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Fleet Operations</span>
+                    <h3 class="text-lg font-luxury font-bold uppercase mt-1">Add Route to Database</h3>
                 </div>
 
                 <form method="POST" action="" class="space-y-3 text-xs">
@@ -570,7 +660,7 @@ HTML_TEMPLATE = """
                             <input type="text" name="new_route_id" placeholder="LX-106" required class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white">
                         </div>
                         <div>
-                            <label class="block text-[10px] font-mono uppercase text-neutral-400 mb-1">Base Fare (Rs.)</label>
+                            <label class="block text-[10px] font-mono uppercase text-neutral-400 mb-1">Price (Rs.)</label>
                             <input type="number" name="new_price" placeholder="2500" required class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white">
                         </div>
                     </div>
@@ -592,22 +682,27 @@ HTML_TEMPLATE = """
                             <input type="text" name="new_dep_time" placeholder="05:00 PM" required class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white">
                         </div>
                         <div>
-                            <label class="block text-[10px] font-mono uppercase text-neutral-400 mb-1">Executive Coach Model</label>
-                            <input type="text" name="new_model" placeholder="Mercedes-Benz Travego" required class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white">
+                            <label class="block text-[10px] font-mono uppercase text-neutral-400 mb-1">Arrival Time</label>
+                            <input type="text" name="new_arr_time" placeholder="08:00 AM" required class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white">
                         </div>
                     </div>
 
+                    <div>
+                        <label class="block text-[10px] font-mono uppercase text-neutral-400 mb-1">Coach Model</label>
+                        <input type="text" name="new_model" placeholder="Mercedes-Benz Travego VIP" required class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white">
+                    </div>
+
                     <button type="submit" class="w-full py-3 bg-white text-black font-bold uppercase tracking-wider text-xs hover:bg-neutral-200 transition mt-2">
-                        + Deploy Route to Live System
+                        + Save Route in Database
                     </button>
                 </form>
             </div>
 
-            <!-- Master Manifest & Cancellation Desk -->
+            <!-- Global Passenger Manifest -->
             <div class="lg:col-span-7 bg-luxury-card border border-luxury p-6 space-y-4">
                 <div class="border-b border-luxury pb-3">
-                    <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">Master Console</span>
-                    <h3 class="text-lg font-luxury font-bold uppercase mt-1">Passenger Manifest & Seat Restoral</h3>
+                    <span class="text-[10px] font-mono uppercase tracking-widest text-neutral-400">System Records</span>
+                    <h3 class="text-lg font-luxury font-bold uppercase mt-1">Master Manifest & Void Desk</h3>
                 </div>
 
                 <div class="overflow-x-auto">
@@ -616,18 +711,16 @@ HTML_TEMPLATE = """
                             <tr class="text-[10px] uppercase text-neutral-400 border-b border-luxury">
                                 <th class="pb-2">Pass ID</th>
                                 <th class="pb-2">Passenger</th>
-                                <th class="pb-2">Contact</th>
                                 <th class="pb-2">Seats</th>
                                 <th class="pb-2">Status</th>
                                 <th class="pb-2 text-right">Void Action</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-luxury">
-                            {% for b in bookings %}
+                            {% for b in all_bookings %}
                             <tr>
                                 <td class="py-3 font-bold text-white">{{ b.booking_id }}</td>
                                 <td class="py-3 font-sans text-neutral-200">{{ b.passenger_name }}</td>
-                                <td class="py-3 text-neutral-400">{{ b.phone }}</td>
                                 <td class="py-3">{{ b.seats | join(', ') }}</td>
                                 <td class="py-3">
                                     <span class="px-2 py-0.5 text-[9px] uppercase font-bold {% if b.status == 'Confirmed' %}bg-white text-black{% else %}text-red-400 border border-red-500/30{% endif %}">
@@ -644,7 +737,7 @@ HTML_TEMPLATE = """
                                         </button>
                                     </form>
                                     {% else %}
-                                    <span class="text-neutral-600 text-[10px]">Restored</span>
+                                    <span class="text-neutral-600 text-[10px]">Voided</span>
                                     {% endif %}
                                 </td>
                             </tr>
@@ -656,22 +749,88 @@ HTML_TEMPLATE = """
 
         </div>
     </div>
+    {% endif %}
 
-    <!-- Official Printable Digital Boarding Pass Modal -->
+    <!-- ============================================================== -->
+    <!-- AUTHENTICATION MODAL (SIGN IN / REGISTER)                      -->
+    <!-- ============================================================== -->
+    <div id="authModal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-black border border-white/20 p-8 max-w-sm w-full shadow-2xl relative text-white space-y-5 font-mono">
+            
+            <div class="flex justify-between items-start border-b border-white/10 pb-3">
+                <div>
+                    <h3 id="authModalTitle" class="font-luxury font-bold text-lg uppercase tracking-wider">Sign In</h3>
+                    <p class="text-[9px] text-neutral-400 uppercase tracking-widest">Executive Credentials</p>
+                </div>
+                <button onclick="closeAuthModal()" class="text-neutral-400 hover:text-white text-xl font-bold">&times;</button>
+            </div>
+
+            <!-- Login Form -->
+            <form method="POST" action="" id="loginForm" class="space-y-4 text-xs">
+                <input type="hidden" name="action_type" value="login">
+                <div>
+                    <label class="block text-[10px] uppercase text-neutral-400 mb-1">Email Address</label>
+                    <input type="email" name="email" placeholder="admin@smartbus.com" required 
+                           class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase text-neutral-400 mb-1">Password</label>
+                    <input type="password" name="password" placeholder="••••••••" required 
+                           class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white focus:outline-none focus:border-white">
+                </div>
+                <button type="submit" class="w-full py-2.5 bg-white text-black font-bold uppercase tracking-widest hover:bg-neutral-200 transition">
+                    Authenticate Account ➔
+                </button>
+                <div class="text-[10px] text-neutral-500 text-center pt-2">
+                    Default Admin: <b class="text-neutral-300">admin@smartbus.com</b> / <b class="text-neutral-300">admin123</b>
+                </div>
+            </form>
+
+            <!-- Register Form -->
+            <form method="POST" action="" id="registerForm" class="space-y-4 text-xs hidden">
+                <input type="hidden" name="action_type" value="register">
+                <div>
+                    <label class="block text-[10px] uppercase text-neutral-400 mb-1">Your Full Name</label>
+                    <input type="text" name="name" placeholder="John Doe" required 
+                           class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase text-neutral-400 mb-1">Email Address</label>
+                    <input type="email" name="email" placeholder="name@domain.com" required 
+                           class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase text-neutral-400 mb-1">Password</label>
+                    <input type="password" name="password" minlength="6" placeholder="At least 6 characters" required 
+                           class="w-full bg-luxury-input border border-luxury px-3 py-2 text-white focus:outline-none focus:border-white">
+                </div>
+                <button type="submit" class="w-full py-2.5 bg-white text-black font-bold uppercase tracking-widest hover:bg-neutral-200 transition">
+                    Create Passenger Account ➔
+                </button>
+            </form>
+
+            <div class="border-t border-white/10 pt-3 text-center">
+                <button id="toggleAuthBtn" onclick="toggleAuthMode()" class="text-[10px] uppercase underline text-neutral-400 hover:text-white">
+                    Need an account? Click here to register
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Printable E-Ticket Modal -->
     <div id="ticketModal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 hidden flex items-center justify-center p-4">
         <div class="bg-black border border-white/30 p-8 max-w-md w-full shadow-2xl relative text-white space-y-6 font-mono" id="printArea">
-            
             <div class="flex justify-between items-start border-b border-white/20 pb-4">
                 <div>
                     <h3 class="font-luxury font-bold text-xl tracking-wider">SMART BUS</h3>
-                    <p class="text-[9px] text-neutral-400 uppercase tracking-[0.25em]">First-Class Electronic Boarding Document</p>
+                    <p class="text-[9px] text-neutral-400 uppercase tracking-[0.25em]">First-Class Electronic Boarding Pass</p>
                 </div>
                 <button onclick="closeTicketModal()" class="text-neutral-400 hover:text-white text-xl font-bold">&times;</button>
             </div>
 
             <div class="space-y-3 text-xs">
                 <div class="flex justify-between">
-                    <span class="text-neutral-400 uppercase">Boarding Pass ID:</span>
+                    <span class="text-neutral-400 uppercase">Boarding Pass #</span>
                     <span id="mTicketId" class="font-bold text-white"></span>
                 </div>
                 <div class="flex justify-between font-sans">
@@ -683,15 +842,11 @@ HTML_TEMPLATE = """
                     <span id="mPhone" class="text-neutral-200"></span>
                 </div>
                 <div class="flex justify-between border-t border-white/10 pt-2 font-sans font-bold">
-                    <span class="text-neutral-400 font-mono uppercase">Itinerary:</span>
+                    <span class="text-neutral-400 font-mono uppercase">Service Route:</span>
                     <span id="mRoute" class="text-white"></span>
                 </div>
                 <div class="flex justify-between">
-                    <span class="text-neutral-400 uppercase">Departure Time:</span>
-                    <span id="mTime" class="text-white"></span>
-                </div>
-                <div class="flex justify-between">
-                    <span class="text-neutral-400 uppercase">Allocated Cabin Seats:</span>
+                    <span class="text-neutral-400 uppercase">Allocated Seats:</span>
                     <span id="mSeats" class="font-bold text-white tracking-widest"></span>
                 </div>
                 <div class="flex justify-between border-t border-white/10 pt-2 font-bold text-sm">
@@ -700,10 +855,9 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- Barcode Graphic Simulation -->
             <div class="pt-4 border-t border-dashed border-white/20 text-center">
                 <div class="h-10 bg-[repeating-linear-gradient(90deg,#fff,#fff_2px,#000_2px,#000_6px)] opacity-80"></div>
-                <p class="text-[8px] text-neutral-500 tracking-[0.3em] mt-2 uppercase">Verified Cryptographic Boarding Pass</p>
+                <p class="text-[8px] text-neutral-500 tracking-[0.3em] mt-2 uppercase">Verified Database Security Hash</p>
             </div>
 
             <div class="flex space-x-3 pt-2">
@@ -717,15 +871,8 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Footer -->
-    <footer class="border-t border-luxury py-10 text-center text-xs text-neutral-500 font-mono space-y-2 mt-20">
-        <p class="font-luxury uppercase text-white tracking-widest text-sm">Smart Bus Transportation Corporation</p>
-        <p>Commercial Intercity Transit System • Production Environment Vercel Deployment</p>
-    </footer>
-
     <!-- Frontend Interactive Script -->
     <script>
-        const allBookings = {{ bookings | tojson }};
         const seatRows = 7;
         let selectedSeats = [];
 
@@ -733,9 +880,10 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.page-content').forEach(p => p.classList.add('hidden'));
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
 
-            document.getElementById(tabId).classList.remove('hidden');
-            const navBtn = document.getElementById('nav-' + tabId);
-            if (navBtn) navBtn.classList.add('active');
+            const target = document.getElementById(tabId);
+            if (target) target.classList.remove('hidden');
+            const nav = document.getElementById('nav-' + tabId);
+            if (nav) nav.classList.add('active');
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
@@ -748,6 +896,7 @@ HTML_TEMPLATE = """
 
         function renderBusSeats() {
             const select = document.getElementById('routeSelect');
+            if (!select || select.options.length === 0) return;
             const opt = select.options[select.selectedIndex];
             const occupied = JSON.parse(opt.getAttribute('data-occupied') || '[]');
             
@@ -816,6 +965,7 @@ HTML_TEMPLATE = """
 
         function updateFareCalculations() {
             const select = document.getElementById('routeSelect');
+            if (!select || select.options.length === 0) return;
             const price = parseInt(select.options[select.selectedIndex].getAttribute('data-price') || 0);
             const count = selectedSeats.length;
 
@@ -839,34 +989,46 @@ HTML_TEMPLATE = """
             document.getElementById('bookSubmitBtn').disabled = (count === 0);
         }
 
-        function searchPass() {
-            const query = document.getElementById('lookupIdInput').value.trim().toUpperCase();
-            const res = document.getElementById('lookupResult');
-            const match = allBookings.find(b => b.booking_id === query);
-
-            res.classList.remove('hidden');
-            if (match) {
-                res.innerHTML = `
-                    <div class="p-4 border border-white/20 bg-black space-y-2">
-                        <div class="text-white font-bold text-sm">Pass Found: ${match.booking_id}</div>
-                        <div>Passenger: <b>${match.passenger_name}</b></div>
-                        <div>Itinerary: ${match.departure} (${match.departure_time})</div>
-                        <div>Seats: <b>${match.seats.join(', ')}</b></div>
-                        <div>Status: <span class="font-bold uppercase ${match.status === 'Confirmed' ? 'text-white' : 'text-red-400'}">${match.status}</span></div>
-                        <button onclick='openTicketModal(${JSON.stringify(match)})' class="w-full mt-3 py-2 bg-white text-black font-bold uppercase text-xs">Print Pass 🖨</button>
-                    </div>
-                `;
+        function openAuthModal(mode) {
+            document.getElementById('authModal').classList.remove('hidden');
+            if (mode === 'register') {
+                showRegister();
             } else {
-                res.innerHTML = `<p class="text-red-400 py-2">No boarding pass located matching "${query}".</p>`;
+                showLogin();
             }
+        }
+
+        function closeAuthModal() {
+            document.getElementById('authModal').classList.add('hidden');
+        }
+
+        function showLogin() {
+            document.getElementById('authModalTitle').innerText = 'Sign In';
+            document.getElementById('loginForm').classList.remove('hidden');
+            document.getElementById('registerForm').classList.add('hidden');
+            document.getElementById('toggleAuthBtn').innerText = 'Need an account? Click here to register';
+            document.getElementById('toggleAuthBtn').onclick = showRegister;
+        }
+
+        function showRegister() {
+            document.getElementById('authModalTitle').innerText = 'Register';
+            document.getElementById('loginForm').classList.add('hidden');
+            document.getElementById('registerForm').classList.remove('hidden');
+            document.getElementById('toggleAuthBtn').innerText = 'Already have an account? Click here to sign in';
+            document.getElementById('toggleAuthBtn').onclick = showLogin;
+        }
+
+        function toggleAuthMode() {
+            const isLogin = !document.getElementById('loginForm').classList.contains('hidden');
+            if (isLogin) showRegister(); else showLogin();
         }
 
         function openTicketModal(b) {
             document.getElementById('mTicketId').innerText = b.booking_id;
             document.getElementById('mPassenger').innerText = b.passenger_name;
-            document.getElementById('mPhone').innerText = (b.phone || 'N/A') + ' | ' + (b.cnic || '');
-            document.getElementById('mRoute').innerText = b.departure;
-            document.getElementById('mTime').innerText = b.departure_time;
+            document.getElementById('mPhone').innerText = b.phone + ' | ' + b.cnic;
+            document.getElementById('mRoute').innerText = b.route_id;
+            document.getElementById('mTime').innerText = b.created_at;
             document.getElementById('mSeats').innerText = b.seats.join(', ');
             document.getElementById('mFare').innerText = 'Rs. ' + b.total_fare.toLocaleString();
             document.getElementById('ticketModal').classList.remove('hidden');
@@ -883,128 +1045,292 @@ HTML_TEMPLATE = """
 """
 
 
+# ==========================================
+# 3. ROUTE CONTROLLERS & SERVER LOGIC
+# ==========================================
 @app.route("/", defaults={"path": ""}, methods=["GET", "POST"])
 @app.route("/<path:path>", methods=["GET", "POST"])
 def index(path):
-    global booking_counter
+    init_db()
+    conn = get_db()
+    cursor = conn.cursor()
+
     alert_message = None
     alert_color = ""
+
+    # Current session user
+    current_user = None
+    if "user_id" in session:
+        cursor.execute(
+            "SELECT id, name, email, role FROM users WHERE id = ?",
+            (session["user_id"],),
+        )
+        row = cursor.fetchone()
+        if row:
+            current_user = dict(row)
 
     if request.method == "POST":
         action = request.form.get("action_type")
 
-        # 1. Booking Flow
-        if action == "book":
+        # -----------------------------
+        # 1. USER REGISTRATION
+        # -----------------------------
+        if action == "register":
+            name = request.form.get("name", "").strip()
+            email = request.form.get("email", "").strip().lower()
+            password = request.form.get("password", "").strip()
+
+            if name and email and len(password) >= 6:
+                try:
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    pwd_hash = generate_password_hash(password)
+                    cursor.execute(
+                        "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, 'passenger', ?)",
+                        (name, email, pwd_hash, now),
+                    )
+                    conn.commit()
+
+                    # Auto login after signup
+                    new_id = cursor.lastrowid
+                    session["user_id"] = new_id
+                    session["user_role"] = "passenger"
+                    session["user_name"] = name
+                    alert_message = (
+                        f"✓ Welcome, {name}! Your account has been registered."
+                    )
+                    alert_color = "bg-neutral-900 text-white border-white"
+                    current_user = {
+                        "id": new_id,
+                        "name": name,
+                        "email": email,
+                        "role": "passenger",
+                    }
+                except sqlite3.IntegrityError:
+                    alert_message = "✕ Registration Failed: An account with this email already exists."
+                    alert_color = "bg-neutral-900 text-red-400 border-red-500"
+            else:
+                alert_message = "✕ Password must be at least 6 characters."
+                alert_color = "bg-neutral-900 text-amber-300 border-amber-500"
+
+        # -----------------------------
+        # 2. USER LOGIN
+        # -----------------------------
+        elif action == "login":
+            email = request.form.get("email", "").strip().lower()
+            password = request.form.get("password", "").strip()
+
+            cursor.execute(
+                "SELECT id, name, email, password_hash, role FROM users WHERE email = ?",
+                (email,),
+            )
+            user_row = cursor.fetchone()
+
+            if user_row and check_password_hash(user_row["password_hash"], password):
+                session["user_id"] = user_row["id"]
+                session["user_role"] = user_row["role"]
+                session["user_name"] = user_row["name"]
+                current_user = dict(user_row)
+                alert_message = (
+                    f"✓ Welcome back, {user_row['name']}! Authenticated successfully."
+                )
+                alert_color = "bg-neutral-900 text-white border-white"
+            else:
+                alert_message = (
+                    "✕ Authentication Failed: Invalid email or password credentials."
+                )
+                alert_color = "bg-neutral-900 text-red-400 border-red-500"
+
+        # -----------------------------
+        # 3. USER LOGOUT
+        # -----------------------------
+        elif action == "logout":
+            session.clear()
+            current_user = None
+            alert_message = "✓ You have been signed out."
+            alert_color = "bg-neutral-900 text-neutral-300 border-neutral-600"
+
+        # -----------------------------
+        # 4. BOOK TICKET
+        # -----------------------------
+        elif action == "book":
             name = request.form.get("name", "").strip()
             phone = request.form.get("phone", "").strip()
             cnic = request.form.get("cnic", "").strip()
-            age_raw = request.form.get("age", "0")
+            age = int(request.form.get("age", 0))
             route_id = request.form.get("route_id", "")
             seats_str = request.form.get("selected_seats", "").strip()
-            selected_seats_list = [s.strip() for s in seats_str.split(",") if s.strip()]
+            chosen_seats = [s.strip() for s in seats_str.split(",") if s.strip()]
 
-            route = next((r for r in routes if r["route_id"] == route_id), None)
+            cursor.execute("SELECT * FROM routes WHERE route_id = ?", (route_id,))
+            r_row = cursor.fetchone()
 
-            if route and selected_seats_list and name and phone and age_raw.isdigit():
-                conflict = any(
-                    s in route["occupied_seats"] for s in selected_seats_list
-                )
+            if r_row and chosen_seats and name and phone and age > 0:
+                occupied_list = json.loads(r_row["occupied_seats"])
+
+                # Check for duplicate seat assignment
+                conflict = any(s in occupied_list for s in chosen_seats)
                 if conflict:
-                    alert_message = "✕ Seat Conflict Detected: One or more selected seats were just claimed."
-                    alert_color = "bg-neutral-900 text-red-400 border-red-500/40"
+                    alert_message = "✕ Seat Conflict: One of the selected seats was just taken. Please re-select."
+                    alert_color = "bg-neutral-900 text-red-400 border-red-500"
                 else:
-                    seat_count = len(selected_seats_list)
-                    subtotal = route["ticket_price"] * seat_count
+                    seat_count = len(chosen_seats)
+                    subtotal = r_row["ticket_price"] * seat_count
                     discount = round(subtotal * 0.10) if seat_count >= 4 else 0
                     final_fare = subtotal - discount
 
-                    booking_id = f"LX-{booking_counter}"
-                    booking_counter += 1
+                    # Generate new sequential booking ID from DB
+                    cursor.execute("SELECT COUNT(*) FROM bookings")
+                    next_id_num = 1001 + cursor.fetchone()[0]
+                    booking_id = f"LX-{next_id_num}"
 
-                    route["occupied_seats"].extend(selected_seats_list)
-                    route["available_seats"] -= seat_count
-
-                    bookings.insert(
-                        0,
-                        {
-                            "booking_id": booking_id,
-                            "passenger_name": name,
-                            "phone": phone,
-                            "cnic": cnic,
-                            "passenger_age": int(age_raw),
-                            "route_id": route_id,
-                            "seats": selected_seats_list,
-                            "subtotal": subtotal,
-                            "discount": discount,
-                            "total_fare": final_fare,
-                            "status": "Confirmed",
-                            "departure": f"{route['departure_city']} ➔ {route['destination_city']}",
-                            "departure_time": route["departure_time"],
-                            "class": route["class"],
-                        },
+                    # Update Route in SQLite
+                    occupied_list.extend(chosen_seats)
+                    new_avail = r_row["available_seats"] - seat_count
+                    cursor.execute(
+                        "UPDATE routes SET occupied_seats = ?, available_seats = ? WHERE route_id = ?",
+                        (json.dumps(occupied_list), new_avail, route_id),
                     )
-                    alert_message = f"✓ Pass {booking_id} Issued for {name} ({seat_count} seats: {', '.join(selected_seats_list)})"
-                    alert_color = "bg-neutral-900 text-white border-white/40"
 
-        # 2. Cancellation Flow
+                    # Insert Booking in SQLite
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    user_id_val = current_user["id"] if current_user else None
+                    cursor.execute(
+                        """
+                    INSERT INTO bookings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                        (
+                            booking_id,
+                            user_id_val,
+                            name,
+                            phone,
+                            cnic,
+                            age,
+                            route_id,
+                            json.dumps(chosen_seats),
+                            subtotal,
+                            discount,
+                            final_fare,
+                            "Confirmed",
+                            now,
+                        ),
+                    )
+                    conn.commit()
+
+                    alert_message = f"✓ Pass {booking_id} Confirmed! Seat(s): {', '.join(chosen_seats)}. Saved in Database."
+                    alert_color = "bg-neutral-900 text-white border-white"
+
+        # -----------------------------
+        # 5. CANCEL BOOKING
+        # -----------------------------
         elif action == "cancel":
             b_id = request.form.get("booking_id")
-            booking = next((b for b in bookings if b["booking_id"] == b_id), None)
-            if booking and booking["status"] == "Confirmed":
-                route = next(
-                    (r for r in routes if r["route_id"] == booking["route_id"]), None
-                )
-                if route:
-                    route["occupied_seats"] = [
-                        s for s in route["occupied_seats"] if s not in booking["seats"]
-                    ]
-                    route["available_seats"] = min(
-                        route["total_seats"],
-                        route["available_seats"] + len(booking["seats"]),
+            cursor.execute(
+                "SELECT * FROM bookings WHERE booking_id = ? AND status = 'Confirmed'",
+                (b_id,),
+            )
+            b_row = cursor.fetchone()
+
+            if b_row:
+                b_seats = json.loads(b_row["seats"])
+                r_id = b_row["route_id"]
+
+                # Restore seats in Route
+                cursor.execute("SELECT * FROM routes WHERE route_id = ?", (r_id,))
+                r_row = cursor.fetchone()
+                if r_row:
+                    occ = json.loads(r_row["occupied_seats"])
+                    new_occ = [s for s in occ if s not in b_seats]
+                    new_avail = min(
+                        r_row["total_seats"], r_row["available_seats"] + len(b_seats)
                     )
-                booking["status"] = "Cancelled"
-                alert_message = f"✓ Pass {b_id} Voided. Seats {', '.join(booking['seats'])} restored to inventory."
+                    cursor.execute(
+                        "UPDATE routes SET occupied_seats = ?, available_seats = ? WHERE route_id = ?",
+                        (json.dumps(new_occ), new_avail, r_id),
+                    )
+
+                # Mark Cancelled in Database
+                cursor.execute(
+                    "UPDATE bookings SET status = 'Cancelled' WHERE booking_id = ?",
+                    (b_id,),
+                )
+                conn.commit()
+
+                alert_message = f"✓ Pass {b_id} Voided. {len(b_seats)} seat(s) restored to route availability."
                 alert_color = "bg-neutral-900 text-neutral-300 border-neutral-500"
 
-        # 3. Admin: Add New Route
-        elif action == "add_route":
+        # -----------------------------
+        # 6. ADMIN: ADD ROUTE
+        # -----------------------------
+        elif action == "add_route" and current_user and current_user["role"] == "admin":
             r_id = request.form.get("new_route_id", "").strip().upper()
             price = int(request.form.get("new_price", 1000))
             dep = request.form.get("new_dep_city", "").strip()
             dest = request.form.get("new_dest_city", "").strip()
-            time = request.form.get("new_dep_time", "").strip()
-            model = request.form.get("new_model", "Luxury Coach").strip()
+            dep_time = request.form.get("new_dep_time", "").strip()
+            arr_time = request.form.get("new_arr_time", "Scheduled").strip()
+            model = request.form.get("new_model", "Mercedes-Benz Travego VIP").strip()
 
             if r_id and dep and dest:
-                routes.append(
-                    {
-                        "route_id": r_id,
-                        "departure_city": dep,
-                        "destination_city": dest,
-                        "departure_time": time,
-                        "arrival_time": "Scheduled",
-                        "ticket_price": price,
-                        "total_seats": 28,
-                        "available_seats": 28,
-                        "bus_model": model,
-                        "class": "Royal First Class",
-                        "occupied_seats": [],
-                    }
+                cursor.execute(
+                    "INSERT OR REPLACE INTO routes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        r_id,
+                        dep,
+                        dest,
+                        dep_time,
+                        arr_time,
+                        price,
+                        28,
+                        28,
+                        model,
+                        "Royal First Class",
+                        json.dumps([]),
+                    ),
                 )
-                alert_message = f"✓ Route {r_id} ({dep} ➔ {dest}) added to live fleet."
+                conn.commit()
+                alert_message = (
+                    f"✓ Route {r_id} successfully added to database inventory."
+                )
                 alert_color = "bg-neutral-900 text-white border-white"
 
+    # Fetch All Data from Database for Rendering
+    cursor.execute("SELECT * FROM routes")
+    routes_rows = cursor.fetchall()
+    routes_list = [dict(r) for r in routes_rows]
+
+    # Fetch Bookings
+    cursor.execute("SELECT * FROM bookings ORDER BY created_at DESC")
+    all_bookings_rows = cursor.fetchall()
+    all_bookings = []
+    for b in all_bookings_rows:
+        b_dict = dict(b)
+        b_dict["seats"] = json.loads(b_dict["seats"])
+        all_bookings.append(b_dict)
+
+    # Filter bookings for the current user (if logged in as passenger)
+    if current_user and current_user["role"] != "admin":
+        user_bookings = [b for b in all_bookings if b["user_id"] == current_user["id"]]
+    else:
+        user_bookings = all_bookings
+
+    # Financial / Operational KPIs
     total_reserved = sum(
-        len(b["seats"]) for b in bookings if b["status"] == "Confirmed"
+        len(b["seats"]) for b in all_bookings if b["status"] == "Confirmed"
     )
-    confirmed_count = sum(1 for b in bookings if b["status"] == "Confirmed")
-    cancelled_count = sum(1 for b in bookings if b["status"] == "Cancelled")
-    total_revenue = sum(b["total_fare"] for b in bookings if b["status"] == "Confirmed")
+    confirmed_count = sum(1 for b in all_bookings if b["status"] == "Confirmed")
+    cancelled_count = sum(1 for b in all_bookings if b["status"] == "Cancelled")
+    total_revenue = sum(
+        b["total_fare"] for b in all_bookings if b["status"] == "Confirmed"
+    )
+
+    conn.close()
 
     return render_template_string(
         HTML_TEMPLATE,
-        routes=routes,
-        bookings=bookings,
+        current_user=current_user,
+        routes=routes_list,
+        bookings=user_bookings,
+        all_bookings=all_bookings,
         total_reserved=total_reserved,
         confirmed_count=confirmed_count,
         cancelled_count=cancelled_count,
