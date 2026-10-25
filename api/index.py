@@ -1,56 +1,18 @@
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request
 
 app = Flask(__name__)
 
-# Core In-Memory Data
+# ==========================================
+# DATA STRUCTURES
+# ==========================================
 SUPPORTED_CITIES = ("Karachi", "Hyderabad", "Sukkur", "Mirpur Khas", "Lahore")
 
 routes = [
-    {
-        "route_id": "R101",
-        "departure_city": "Karachi",
-        "destination_city": "Hyderabad",
-        "departure_time": "08:00 AM",
-        "ticket_price": 1200,
-        "total_seats": 40,
-        "available_seats": 40,
-    },
-    {
-        "route_id": "R102",
-        "departure_city": "Karachi",
-        "destination_city": "Sukkur",
-        "departure_time": "09:30 AM",
-        "ticket_price": 2000,
-        "total_seats": 36,
-        "available_seats": 36,
-    },
-    {
-        "route_id": "R103",
-        "departure_city": "Hyderabad",
-        "destination_city": "Mirpur Khas",
-        "departure_time": "11:00 AM",
-        "ticket_price": 800,
-        "total_seats": 32,
-        "available_seats": 32,
-    },
-    {
-        "route_id": "R104",
-        "departure_city": "Karachi",
-        "destination_city": "Lahore",
-        "departure_time": "07:00 PM",
-        "ticket_price": 5000,
-        "total_seats": 45,
-        "available_seats": 45,
-    },
-    {
-        "route_id": "R105",
-        "departure_city": "Sukkur",
-        "destination_city": "Hyderabad",
-        "departure_time": "02:00 PM",
-        "ticket_price": 1500,
-        "total_seats": 30,
-        "available_seats": 30,
-    },
+    {"route_id": "R101", "departure_city": "Karachi", "destination_city": "Hyderabad", "departure_time": "08:00 AM", "ticket_price": 1200, "total_seats": 40, "available_seats": 40},
+    {"route_id": "R102", "departure_city": "Karachi", "destination_city": "Sukkur", "departure_time": "09:30 AM", "ticket_price": 2000, "total_seats": 36, "available_seats": 36},
+    {"route_id": "R103", "departure_city": "Hyderabad", "destination_city": "Mirpur Khas", "departure_time": "11:00 AM", "ticket_price": 800, "total_seats": 32, "available_seats": 32},
+    {"route_id": "R104", "departure_city": "Karachi", "destination_city": "Lahore", "departure_time": "07:00 PM", "ticket_price": 5000, "total_seats": 45, "available_seats": 45},
+    {"route_id": "R105", "departure_city": "Sukkur", "destination_city": "Hyderabad", "departure_time": "02:00 PM", "ticket_price": 1500, "total_seats": 30, "available_seats": 30},
 ]
 
 bookings = []
@@ -69,7 +31,7 @@ HTML_TEMPLATE = """
     <header class="bg-blue-900 text-white py-6 shadow-md">
         <div class="max-w-6xl mx-auto px-4 flex justify-between items-center">
             <h1 class="text-2xl font-bold tracking-wide">🚌 Smart Bus Reservation System</h1>
-            <span class="bg-blue-800 text-xs px-3 py-1 rounded-full border border-blue-700">Live on Vercel</span>
+            <span class="bg-emerald-600 text-xs px-3 py-1 rounded-full font-semibold">Live & Active</span>
         </div>
     </header>
 
@@ -77,7 +39,8 @@ HTML_TEMPLATE = """
         <!-- Booking Form -->
         <section class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-fit">
             <h2 class="text-xl font-bold mb-4 text-blue-900 border-b pb-2">Book a Ticket</h2>
-            <form action="/book" method="POST" class="space-y-4">
+            <form method="POST" action="" class="space-y-4">
+                <input type="hidden" name="action_type" value="book">
                 <div>
                     <label class="block text-sm font-semibold mb-1">Passenger Name</label>
                     <input type="text" name="name" required class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-blue-500">
@@ -100,15 +63,15 @@ HTML_TEMPLATE = """
                     <label class="block text-sm font-semibold mb-1">Seats Quantity</label>
                     <input type="number" name="seats" min="1" max="10" value="1" required class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-blue-500">
                 </div>
-                <button type="submit" class="w-full bg-blue-700 hover:bg-blue-800 text-white font-bold py-2 px-4 rounded-lg transition duration-200">
+                <button type="submit" class="w-full bg-blue-700 hover:bg-blue-800 text-white font-bold py-2.5 px-4 rounded-lg transition duration-200 shadow">
                     Confirm Reservation
                 </button>
             </form>
         </section>
 
-        <!-- Routes & History Display -->
+        <!-- Right Panels: Routes & Bookings -->
         <section class="md:col-span-2 space-y-8">
-            <!-- Routes -->
+            <!-- Available Routes -->
             <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                 <h2 class="text-xl font-bold mb-4 text-blue-900 border-b pb-2">Available Routes</h2>
                 <div class="overflow-x-auto">
@@ -145,9 +108,9 @@ HTML_TEMPLATE = """
 
             <!-- Booking History -->
             <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                <h2 class="text-xl font-bold mb-4 text-blue-900 border-b pb-2">Recent Bookings & Cancellations</h2>
+                <h2 class="text-xl font-bold mb-4 text-blue-900 border-b pb-2">Booking History</h2>
                 {% if not bookings %}
-                <p class="text-sm text-slate-500">No bookings made yet in this session.</p>
+                <p class="text-sm text-slate-500 py-2">No bookings placed yet. Book a seat using the form!</p>
                 {% else %}
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-sm">
@@ -157,7 +120,7 @@ HTML_TEMPLATE = """
                                 <th class="p-2">Passenger</th>
                                 <th class="p-2">Route</th>
                                 <th class="p-2">Seats</th>
-                                <th class="p-2">Fare</th>
+                                <th class="p-2">Total Fare</th>
                                 <th class="p-2">Status</th>
                                 <th class="p-2">Action</th>
                             </tr>
@@ -177,72 +140,6 @@ HTML_TEMPLATE = """
                                 </td>
                                 <td class="p-2">
                                     {% if b.status == 'Confirmed' %}
-                                    <form action="/cancel" method="POST">
-                                        <input type="hidden" name="booking_id" value="{{ b.booking_id }}">
-                                        <button type="submit" class="text-xs text-red-600 hover:underline font-semibold">Cancel</button>
-                                    </form>
-                                    {% else %}
-                                    <span class="text-xs text-slate-400">Cancelled</span>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-                {% endif %}
-            </div>
-        </section>
-    </main>
-</body>
-</html>
-"""
-
-
-@app.route("/")
-def index():
-    return render_template_string(HTML_TEMPLATE, routes=routes, bookings=bookings)
-
-
-@app.route("/book", methods=["POST"])
-def book():
-    global booking_counter
-    name = request.form.get("name", "").strip()
-    age = int(request.form.get("age", 0))
-    route_id = request.form.get("route_id", "")
-    seats = int(request.form.get("seats", 0))
-
-    route = next((r for r in routes if r["route_id"] == route_id), None)
-    if route and 0 < seats <= route["available_seats"] and name and age > 0:
-        booking_id = f"B{booking_counter}"
-        booking_counter += 1
-        route["available_seats"] -= seats
-        bookings.insert(
-            0,
-            {
-                "booking_id": booking_id,
-                "passenger_name": name,
-                "passenger_age": age,
-                "route_id": route_id,
-                "seats": seats,
-                "total_fare": route["ticket_price"] * seats,
-                "status": "Confirmed",
-            },
-        )
-    return index()
-
-
-@app.route("/cancel", methods=["POST"])
-def cancel():
-    b_id = request.form.get("booking_id")
-    booking = next((b for b in bookings if b["booking_id"] == b_id), None)
-    if booking and booking["status"] == "Confirmed":
-        route = next((r for r in routes if r["route_id"] == booking["route_id"]), None)
-        if route:
-            route["available_seats"] += booking["seats"]
-        booking["status"] = "Cancelled"
-    return index()
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
+                                    <form method="POST" action="">
+                                        <input type="hidden" name="action_type" value="cancel">
+                                        <input type="hidden" name="booki
